@@ -1,14 +1,14 @@
-// server.js
-import http from "http";
-import { WebSocketServer } from "ws";
-import { parse } from "url";
+// server.js (CommonJS)
+const http = require("http");
+const { WebSocketServer } = require("ws");
+const url = require("url");
 
 const server = http.createServer((req, res) => {
   res.writeHead(200, { "content-type": "text/plain" });
   res.end("PnP relay OK\n");
 });
 
-const wss = new WebSocketServer({ server, maxPayload: 5 * 1024 * 1024 }); // allow big snapshots
+const wss = new WebSocketServer({ server, maxPayload: 5 * 1024 * 1024 });
 
 // roomName -> Set(ws)
 const rooms = new Map();
@@ -30,21 +30,25 @@ function leaveRoom(ws) {
   ws.room = null;
 }
 
-ws.on("message", (data) => {
-  // TEMP DEBUG: log first bit of message so we know it arrives
-  const preview = Buffer.isBuffer(data) ? data.toString("utf8").slice(0, 120) : String(data).slice(0, 120);
-  console.log(`[relay] room=${ws.room} bytes=${data.length ?? preview.length} preview=${preview}`);
+wss.on("connection", (ws, req) => {
+  const parsed = url.parse(req.url, true);
+  const room = String((parsed.query && parsed.query.room) || "lobby");
+  joinRoom(ws, room);
 
-  const peers = rooms.get(ws.room);
-  if (!peers) return;
+  ws.on("message", (data) => {
+    // TEMP DEBUG: confirm messages arrive
+    const preview = Buffer.from(data).toString("utf8").slice(0, 140);
+    console.log(`[relay] room=${ws.room} bytes=${Buffer.byteLength(data)} preview=${preview}`);
 
-  for (const peer of peers) {
-    if (peer !== ws && peer.readyState === peer.OPEN) {
-      peer.send(data);
+    const peers = rooms.get(ws.room);
+    if (!peers) return;
+
+    for (const peer of peers) {
+      if (peer !== ws && peer.readyState === peer.OPEN) {
+        peer.send(data);
+      }
     }
-  }
-});
-
+  });
 
   ws.on("close", () => leaveRoom(ws));
   ws.on("error", () => leaveRoom(ws));
