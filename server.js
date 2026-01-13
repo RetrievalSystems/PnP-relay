@@ -30,22 +30,21 @@ function leaveRoom(ws) {
   ws.room = null;
 }
 
-wss.on("connection", (ws, req) => {
-  const { query } = parse(req.url, true);
-  const room = String(query.room || "lobby");
-  joinRoom(ws, room);
+ws.on("message", (data) => {
+  // TEMP DEBUG: log first bit of message so we know it arrives
+  const preview = Buffer.isBuffer(data) ? data.toString("utf8").slice(0, 120) : String(data).slice(0, 120);
+  console.log(`[relay] room=${ws.room} bytes=${data.length ?? preview.length} preview=${preview}`);
 
-  ws.on("message", (data) => {
-    // Broadcast to everyone else in the same room
-    const peers = rooms.get(ws.room);
-    if (!peers) return;
+  const peers = rooms.get(ws.room);
+  if (!peers) return;
 
-    for (const peer of peers) {
-      if (peer !== ws && peer.readyState === peer.OPEN) {
-        peer.send(data);
-      }
+  for (const peer of peers) {
+    if (peer !== ws && peer.readyState === peer.OPEN) {
+      peer.send(data);
     }
-  });
+  }
+});
+
 
   ws.on("close", () => leaveRoom(ws));
   ws.on("error", () => leaveRoom(ws));
