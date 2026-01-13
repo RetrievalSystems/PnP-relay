@@ -1,59 +1,55 @@
+// server.js
 import http from "http";
 import { WebSocketServer } from "ws";
+import { parse } from "url";
 
 const server = http.createServer((req, res) => {
   res.writeHead(200, { "content-type": "text/plain" });
   res.end("PnP relay OK\n");
 });
 
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ server, maxPayload: 5 * 1024 * 1024 }); // allow big snapshots
 
-// roomName -> Set of sockets
+// roomName -> Set(ws)
 const rooms = new Map();
 
-function room(name) {
-  if (!rooms.has(name)) rooms.set(name, new Set());
-  return rooms.get(name);
+function joinRoom(ws, room) {
+  ws.room = room;
+  if (!rooms.has(room)) rooms.set(room, new Set());
+  rooms.get(room).add(ws);
 }
 
-wss.on("connection", (ws) => {
-  ws._room = null;
+function leaveRoom(ws) {
+  const room = ws.room;
+  if (!room) return;
+  const set = rooms.get(room);
+  if (set) {
+    set.delete(ws);
+    if (set.size === 0) rooms.delete(room);
+  }
+  ws.room = null;
+}
+
+wss.on("connection", (ws, req) => {
+  const { query } = parse(req.url, true);
+  const room = String(query.room || "lobby");
+  joinRoom(ws, room);
 
   ws.on("message", (data) => {
-    let msg;
-    try { msg = JSON.parse(data.toString()); } catch { return; }
+    // Broadcast to everyone else in the same room
+    const peers = rooms.get(ws.room);
+    if (!peers) return;
 
-    // Join: { t:"join", room:"abc" }
-    if (msg.t === "join" && typeof msg.room === "string") {
-      if (ws._room) room(ws._room).delete(ws);
-      ws._room = msg.room.trim().slice(0, 64) || "default";
-      const r = room(ws._room);
-      r.add(ws);
-
-      ws.send(JSON.stringify({ t: "joined", room: ws._room, peers: r.size }));
-      for (const peer of r) {
-        if (peer !== ws && peer.readyState === 1) {
-          peer.send(JSON.stringify({ t: "peer_joined", room: ws._room, peers: r.size }));
-        }
+    for (const peer of peers) {
+      if (peer !== ws && peer.readyState === peer.OPEN) {
+        peer.send(data);
       }
-      return;
-    }
-
-    // Relay anything else to everyone else in the same room
-    if (!ws._room) return;
-    const r = room(ws._room);
-    for (const peer of r) {
-      if (peer !== ws && peer.readyState === 1) peer.send(data);
     }
   });
 
-  ws.on("close", () => {
-    if (!ws._room) return;
-    const r = room(ws._room);
-    r.delete(ws);
-    if (r.size === 0) rooms.delete(ws._room);
-  });
+  ws.on("close", () => leaveRoom(ws));
+  ws.on("error", () => leaveRoom(ws));
 });
 
-const port = process.env.PORT || 10000;
-server.listen(port, () => console.log("Relay listening on", port));
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => console.log("Relay listening on", PORT));
