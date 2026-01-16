@@ -1,58 +1,62 @@
-// server.js (CommonJS)
-const http = require("http");
-const { WebSocketServer } = require("ws");
-const url = require("url");
+const WebSocket = require('ws');
+const http = require('http');
 
+const PORT = process.env.PORT || 8080;
 const server = http.createServer((req, res) => {
-  res.writeHead(200, { "content-type": "text/plain" });
-  res.end("PnP relay OK\n");
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Relay Server Running\n');
 });
 
-const wss = new WebSocketServer({ server, maxPayload: 5 * 1024 * 1024 });
-
-// roomName -> Set(ws)
+const wss = new WebSocket.Server({ server });
 const rooms = new Map();
 
-function joinRoom(ws, room) {
-  ws.room = room;
-  if (!rooms.has(room)) rooms.set(room, new Set());
-  rooms.get(room).add(ws);
-}
-
-function leaveRoom(ws) {
-  const room = ws.room;
-  if (!room) return;
-  const set = rooms.get(room);
-  if (set) {
-    set.delete(ws);
-    if (set.size === 0) rooms.delete(room);
-  }
-  ws.room = null;
-}
-
-wss.on("connection", (ws, req) => {
-  const parsed = url.parse(req.url, true);
-  const room = String((parsed.query && parsed.query.room) || "lobby");
-  joinRoom(ws, room);
-
-  ws.on("message", (data) => {
-    // TEMP DEBUG: confirm messages arrive
-    const preview = Buffer.from(data).toString("utf8").slice(0, 140);
-    console.log(`[relay] room=${ws.room} bytes=${Buffer.byteLength(data)} preview=${preview}`);
-
-    const peers = rooms.get(ws.room);
-    if (!peers) return;
-
-    for (const peer of peers) {
-      if (peer !== ws && peer.readyState === peer.OPEN) {
-        peer.send(data);
+wss.on('connection', (ws) => {
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+  
+  ws.on('message', (data) => {
+    try {
+      const msg = JSON.parse(data);
+      
+      if (msg.type === 'join_room') {
+        ws.roomId = msg.room;
+        ws.role = msg.role;
+        
+        if (!rooms.has(msg.room)) rooms.set(msg.room, new Set());
+        rooms.get(msg.room).add(ws);
+        
+        console.log(`${msg.role} joined room ${msg.room}`);
+        return;
       }
+      
+      // Broadcast to room
+      if (ws.roomId && rooms.has(ws.roomId)) {
+        const msgStr = JSON.stringify(msg);
+        rooms.get(ws.roomId).forEach(client => {
+          if (client !== ws && client.readyState === WebSocket.OPEN) {
+            client.send(msgStr);
+          }
+        });
+      }
+    } catch (e) {
+      console.error('Error:', e);
     }
   });
-
-  ws.on("close", () => leaveRoom(ws));
-  ws.on("error", () => leaveRoom(ws));
+  
+  ws.on('close', () => {
+    if (ws.roomId && rooms.has(ws.roomId)) {
+      rooms.get(ws.roomId).delete(ws);
+      if (rooms.get(ws.roomId).size === 0) rooms.delete(ws.roomId);
+    }
+  });
 });
 
-const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => console.log("Relay listening on", PORT));
+setInterval(() => {
+  wss.clients.forEach(ws => {
+    if (!ws.isAlive) return ws.terminate();
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000);
+
+server.listen(PORT, () => console.log(`Server on port ${PORT}`));
